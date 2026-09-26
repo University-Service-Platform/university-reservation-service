@@ -1,7 +1,9 @@
 package com.university.reservations.config;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -15,8 +17,10 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.util.StringUtils;
 
 @Configuration
 @EnableWebSecurity
@@ -26,11 +30,14 @@ public class SecurityConfig {
 	@Value("${reservation-service.jwt.roles-claim:roles}")
 	private String rolesClaim;
 
+	@Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri:}")
+	private String jwkSetUri;
+
 	@Bean
 	SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
 		http.csrf(csrf -> csrf.disable())
 				.authorizeHttpRequests(auth -> auth
-						.requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
+						.requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**", "/v3/api-docs").permitAll()
 						.anyRequest().authenticated())
 				.oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));
 		return http.build();
@@ -39,7 +46,21 @@ public class SecurityConfig {
 	@Bean
 	@ConditionalOnMissingBean
 	public JwtDecoder jwtDecoder() {
-		return token -> null;
+		if (StringUtils.hasText(jwkSetUri)) {
+			return NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+		}
+		// Fallback for local development / testing when JWK Set URI is unconfigured
+		return token -> {
+			Instant now = Instant.now();
+			String sub = (StringUtils.hasText(token) && !token.equalsIgnoreCase("bearer")) ? token : "dev-user";
+			Map<String, Object> headers = Map.of("alg", "none");
+			Map<String, Object> claims = Map.of(
+					"sub", sub,
+					rolesClaim, List.of("STUDENT", "RESOURCE_MANAGER"),
+					"iat", now,
+					"exp", now.plusSeconds(3600));
+			return new Jwt(token, now, now.plusSeconds(3600), headers, claims);
+		};
 	}
 
 	private Converter<Jwt, ? extends AbstractAuthenticationToken> jwtAuthenticationConverter() {
@@ -50,7 +71,8 @@ public class SecurityConfig {
 				return List.of();
 			}
 			return roles.stream()
-					.map(role -> new SimpleGrantedAuthority(role.startsWith("ROLE_") ? role : "ROLE_" + role))
+					.map(role -> role.startsWith("ROLE_") ? role : "ROLE_" + role)
+					.map(SimpleGrantedAuthority::new)
 					.collect(Collectors.toList());
 		});
 		return converter;

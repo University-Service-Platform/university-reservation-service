@@ -5,7 +5,7 @@ import java.time.LocalDateTime;
 
 public record ReservationResponse(
 		Long id,
-		String resourceId,
+		Long resourceId,
 		String requesterId,
 		LocalDateTime startTime,
 		LocalDateTime endTime,

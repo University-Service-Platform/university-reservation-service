@@ -11,11 +11,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.university.reservations.config.SecurityConfig;
 import com.university.reservations.dto.ApprovalRequest;
 import com.university.reservations.dto.CreateReservationRequest;
+import com.university.reservations.dto.ReservationApprovalResponse;
 import com.university.reservations.dto.ReservationResponse;
+import com.university.reservations.dto.ReservationStatusSummaryResponse;
+import com.university.reservations.dto.ResourceReservationSummaryResponse;
+import com.university.reservations.dto.UsageTrendResponse;
+import com.university.reservations.exception.BusinessException;
 import com.university.reservations.exception.ResourceNotFoundException;
+import com.university.reservations.model.ReservationApprovalAction;
 import com.university.reservations.model.ReservationStatus;
 import com.university.reservations.service.ReservationService;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -39,23 +46,23 @@ class ReservationControllerTest {
 	@MockitoBean
 	private JwtDecoder jwtDecoder;
 
-	private final LocalDateTime base = LocalDateTime.of(2026, 10, 20, 9, 0);
+	private final LocalDateTime base = LocalDateTime.now().plusDays(1).withHour(9).withMinute(0);
 
 	private final ReservationResponse response = new ReservationResponse(
-			1L, "resource-1", "student-7", base, base.plusHours(2),
+			1L, 1L, "student-7", base, base.plusHours(2),
 			ReservationStatus.PENDING, "Group study", 20, base, base);
 
 	private String createdRequestBody() {
 		return """
 				{
-				  "resourceId": "resource-1",
+				  "resourceId": 1,
 				  "requesterId": "student-7",
-				  "startTime": "2026-10-20T09:00:00",
-				  "endTime": "2026-10-20T11:00:00",
+				  "startTime": "%s",
+				  "endTime": "%s",
 				  "purpose": "Group study",
 				  "expectedAttendees": 20
 				}
-				""";
+				""".formatted(base.toString(), base.plusHours(2).toString());
 	}
 
 	@Test
@@ -76,14 +83,14 @@ class ReservationControllerTest {
 	void create_returns400ForInvalidBody() throws Exception {
 		String invalid = """
 				{
-				  "resourceId": "resource-1",
+				  "resourceId": null,
 				  "requesterId": "student-7",
-				  "startTime": "2026-10-20T09:00:00",
-				  "endTime": "2026-10-20T11:00:00",
+				  "startTime": "%s",
+				  "endTime": "%s",
 				  "purpose": "",
 				  "expectedAttendees": 0
 				}
-				""";
+				""".formatted(base.toString(), base.plusHours(2).toString());
 
 		mockMvc.perform(post("/api/v1/reservations")
 						.contentType(MediaType.APPLICATION_JSON)
@@ -127,8 +134,7 @@ class ReservationControllerTest {
 	@WithMockUser(roles = "RESOURCE_MANAGER")
 	void reject_asManagerWithoutReasonIsBadRequest() throws Exception {
 		when(reservationService.rejectReservation(any(Long.class), any(ApprovalRequest.class)))
-				.thenThrow(new com.university.reservations.exception.BusinessException(
-						"A written reason is mandatory when rejecting a reservation"));
+				.thenThrow(new BusinessException("A written reason is mandatory when rejecting a reservation"));
 
 		mockMvc.perform(post("/api/v1/reservations/1/reject")
 						.contentType(MediaType.APPLICATION_JSON)
@@ -148,10 +154,66 @@ class ReservationControllerTest {
 	@Test
 	@WithMockUser
 	void list_returns200() throws Exception {
-		when(reservationService.listReservations(any(), any(), any())).thenReturn(java.util.List.of(response));
+		when(reservationService.listReservations(any(), any(), any())).thenReturn(List.of(response));
 
 		mockMvc.perform(get("/api/v1/reservations")
 						.queryParam("status", "PENDING"))
+				.andExpect(status().isOk());
+	}
+
+	@Test
+	@WithMockUser(roles = "RESOURCE_MANAGER")
+	void getPending_asManagerReturns200() throws Exception {
+		when(reservationService.getPendingReservations()).thenReturn(List.of(response));
+
+		mockMvc.perform(get("/api/v1/reservations/pending"))
+				.andExpect(status().isOk());
+	}
+
+	@Test
+	@WithMockUser
+	void getMyReservations_returns200() throws Exception {
+		when(reservationService.getMyReservations()).thenReturn(List.of(response));
+
+		mockMvc.perform(get("/api/v1/reservations/my"))
+				.andExpect(status().isOk());
+	}
+
+	@Test
+	@WithMockUser
+	void getHistory_returns200() throws Exception {
+		ReservationApprovalResponse history = new ReservationApprovalResponse(
+				10L, 1L, "manager-1", ReservationApprovalAction.APPROVED, "Ok", base);
+		when(reservationService.getReservationHistory(1L)).thenReturn(List.of(history));
+
+		mockMvc.perform(get("/api/v1/reservations/1/history"))
+				.andExpect(status().isOk());
+	}
+
+	@Test
+	@WithMockUser
+	void getStatusSummary_returns200() throws Exception {
+		when(reservationService.getStatusSummary()).thenReturn(new ReservationStatusSummaryResponse(1, 2, 0, 1));
+
+		mockMvc.perform(get("/api/v1/reservations/summary/status"))
+				.andExpect(status().isOk());
+	}
+
+	@Test
+	@WithMockUser
+	void getResourceSummaries_returns200() throws Exception {
+		when(reservationService.getResourceSummaries()).thenReturn(List.of(new ResourceReservationSummaryResponse(1L, 5, 4, 1)));
+
+		mockMvc.perform(get("/api/v1/reservations/summary/resources"))
+				.andExpect(status().isOk());
+	}
+
+	@Test
+	@WithMockUser
+	void getResourceTrend_returns200() throws Exception {
+		when(reservationService.getResourceTrend(1L)).thenReturn(List.of(new UsageTrendResponse("2026-10-20", 3)));
+
+		mockMvc.perform(get("/api/v1/reservations/summary/resources/1/trend"))
 				.andExpect(status().isOk());
 	}
 }

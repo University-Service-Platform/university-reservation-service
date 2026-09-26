@@ -19,45 +19,45 @@ class ReservationRepositoryTest {
 
 	@Test
 	void countOverlappingApproved_detectsOverlap() {
-		saveReservation("resource-1", base, base.plusHours(2), ReservationStatus.APPROVED);
+		saveReservation(1L, base, base.plusHours(2), ReservationStatus.APPROVED);
 
 		long count = reservationRepository.countOverlappingApproved(
-				"resource-1", base.plusHours(1), base.plusHours(3));
+				1L, base.plusHours(1), base.plusHours(3));
 
 		assertEquals(1, count);
 	}
 
 	@Test
 	void countOverlappingApproved_ignoresPendingReservations() {
-		saveReservation("resource-1", base, base.plusHours(2), ReservationStatus.PENDING);
+		saveReservation(1L, base, base.plusHours(2), ReservationStatus.PENDING);
 
 		long count = reservationRepository.countOverlappingApproved(
-				"resource-1", base.plusHours(1), base.plusHours(3));
+				1L, base.plusHours(1), base.plusHours(3));
 
 		assertEquals(0, count);
 	}
 
 	@Test
 	void countOverlappingApproved_ignoresOtherResources() {
-		saveReservation("resource-2", base, base.plusHours(2), ReservationStatus.APPROVED);
+		saveReservation(2L, base, base.plusHours(2), ReservationStatus.APPROVED);
 
 		long count = reservationRepository.countOverlappingApproved(
-				"resource-1", base.plusHours(1), base.plusHours(3));
+				1L, base.plusHours(1), base.plusHours(3));
 
 		assertEquals(0, count);
 	}
 
 	@Test
 	void countOverlappingApproved_adjacentTimeSlotsDoNotOverlap() {
-		saveReservation("resource-1", base, base.plusHours(2), ReservationStatus.APPROVED);
+		saveReservation(1L, base, base.plusHours(2), ReservationStatus.APPROVED);
 
 		long count = reservationRepository.countOverlappingApproved(
-				"resource-1", base.plusHours(2), base.plusHours(4));
+				1L, base.plusHours(2), base.plusHours(4));
 
 		assertEquals(0, count);
 	}
 
-	private void saveReservation(String resourceId, LocalDateTime start, LocalDateTime end, ReservationStatus status) {
+	private void saveReservation(Long resourceId, LocalDateTime start, LocalDateTime end, ReservationStatus status) {
 		Reservation reservation = new Reservation();
 		reservation.setResourceId(resourceId);
 		reservation.setRequesterId("student-7");
