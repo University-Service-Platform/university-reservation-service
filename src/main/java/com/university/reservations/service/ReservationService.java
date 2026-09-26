@@ -2,8 +2,13 @@ package com.university.reservations.service;
 
 import com.university.reservations.dto.ApprovalRequest;
 import com.university.reservations.dto.CreateReservationRequest;
-import com.university.reservations.dto.FacilityResourceInfo;
+import com.university.reservations.dto.FacilityResourceValidationData;
+import com.university.reservations.dto.ReservationApprovalResponse;
 import com.university.reservations.dto.ReservationResponse;
+import com.university.reservations.dto.ReservationStatusSummaryResponse;
+import com.university.reservations.dto.ResourceReservationSummaryResponse;
+import com.university.reservations.dto.UsageTrendResponse;
+import com.university.reservations.dto.UserValidationData;
 import com.university.reservations.exception.BusinessException;
 import com.university.reservations.exception.ReservationConflictException;
 import com.university.reservations.exception.ResourceNotFoundException;
@@ -15,8 +20,11 @@ import com.university.reservations.repository.ReservationApprovalRepository;
 import com.university.reservations.repository.ReservationRepository;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,15 +36,18 @@ public class ReservationService {
 	private final ReservationRepository reservationRepository;
 	private final ReservationApprovalRepository approvalRepository;
 	private final FacilityResourceClient facilityResourceClient;
+	private final UserValidationClient userValidationClient;
 	private final AuthService authService;
 
 	public ReservationService(ReservationRepository reservationRepository,
 			ReservationApprovalRepository approvalRepository,
 			FacilityResourceClient facilityResourceClient,
+			UserValidationClient userValidationClient,
 			AuthService authService) {
 		this.reservationRepository = reservationRepository;
 		this.approvalRepository = approvalRepository;
 		this.facilityResourceClient = facilityResourceClient;
+		this.userValidationClient = userValidationClient;
 		this.authService = authService;
 	}
 
@@ -44,23 +55,51 @@ public class ReservationService {
 	public ReservationResponse createReservation(CreateReservationRequest request) {
 		request.validate();
 
-		FacilityResourceInfo resource = facilityResourceClient.getResource(request.resourceId());
+		String requesterId = resolveRequesterId(request.requesterId());
 
-		if (resource.capacity() != null && request.expectedAttendees() > resource.capacity()) {
-			throw new BusinessException("expectedAttendees exceeds resource capacity of " + resource.capacity());
+		if (userValidationClient.isIntegrationEnabled()) {
+			UserValidationData userData = userValidationClient.validateUser(requesterId);
+			if (!userData.active()) {
+				throw new BusinessException("Requester is not active or eligible to make reservations");
+			}
 		}
-		validateWithinOpenHours(resource, request.startTime(), request.endTime());
+
+		FacilityResourceValidationData resourceData = facilityResourceClient.validateResource(request.resourceId());
+
+		if (resourceData.capacity() != null && request.expectedAttendees() > resourceData.capacity()) {
+			throw new BusinessException("expectedAttendees (" + request.expectedAttendees()
+					+ ") exceeds resource capacity of " + resourceData.capacity());
+		}
+
+		validateWithinOperatingHours(resourceData, request.startTime(), request.endTime());
+
+		long overlaps = reservationRepository.countOverlappingApproved(
+				request.resourceId(), request.startTime(), request.endTime());
+		if (overlaps > 0) {
+			throw new ReservationConflictException("Resource is already reserved for the requested time period.");
+		}
+
+		boolean approvalRequired = Boolean.TRUE.equals(resourceData.approvalRequired());
 
 		Reservation reservation = new Reservation();
 		reservation.setResourceId(request.resourceId());
-		reservation.setRequesterId(request.requesterId());
+		reservation.setRequesterId(requesterId);
 		reservation.setStartTime(request.startTime());
 		reservation.setEndTime(request.endTime());
-		reservation.setStatus(ReservationStatus.PENDING);
 		reservation.setPurpose(request.purpose());
 		reservation.setExpectedAttendees(request.expectedAttendees());
 
-		return toResponse(reservationRepository.save(reservation));
+		if (approvalRequired) {
+			reservation.setStatus(ReservationStatus.PENDING);
+			reservation = reservationRepository.save(reservation);
+		} else {
+			reservation.setStatus(ReservationStatus.APPROVED);
+			reservation = reservationRepository.save(reservation);
+			recordApproval(reservation, "SYSTEM_AUTO_APPROVE", ReservationApprovalAction.APPROVED,
+					"Auto-approved: Resource does not require manager approval");
+		}
+
+		return toResponse(reservation);
 	}
 
 	@Transactional(readOnly = true)
@@ -94,6 +133,35 @@ public class ReservationService {
 		return result.stream().map(this::toResponse).toList();
 	}
 
+	@Transactional(readOnly = true)
+	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
+	public List<ReservationResponse> getPendingReservations() {
+		return reservationRepository.findByStatus(ReservationStatus.PENDING)
+				.stream().map(this::toResponse).toList();
+	}
+
+	@Transactional(readOnly = true)
+	public List<ReservationResponse> getMyReservations() {
+		String currentUserId = authService.getCurrentUserId();
+		return reservationRepository.findByRequesterId(currentUserId)
+				.stream().map(this::toResponse).toList();
+	}
+
+	@Transactional(readOnly = true)
+	public List<ReservationApprovalResponse> getReservationHistory(Long reservationId) {
+		findReservation(reservationId);
+		return approvalRepository.findByReservationId(reservationId)
+				.stream()
+				.map(app -> new ReservationApprovalResponse(
+						app.getId(),
+						app.getReservation().getId(),
+						app.getActionBy(),
+						app.getAction(),
+						app.getReason(),
+						app.getActionTimestamp()))
+				.toList();
+	}
+
 	@Transactional
 	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
 	public ReservationResponse approveReservation(Long id, ApprovalRequest request) {
@@ -103,12 +171,15 @@ public class ReservationService {
 		long overlaps = reservationRepository.countOverlappingApproved(
 				reservation.getResourceId(), reservation.getStartTime(), reservation.getEndTime());
 		if (overlaps > 0) {
-			throw new ReservationConflictException("Resource is already booked for the requested time");
+			throw new ReservationConflictException("Resource is already reserved for the requested time period.");
 		}
+
+		facilityResourceClient.validateResource(reservation.getResourceId());
 
 		reservation.setStatus(ReservationStatus.APPROVED);
 		reservationRepository.save(reservation);
-		recordApproval(reservation, ReservationApprovalAction.APPROVED, request == null ? null : request.reason());
+		recordApproval(reservation, authService.getCurrentUserId(), ReservationApprovalAction.APPROVED,
+				request == null ? null : request.reason());
 
 		return toResponse(reservation);
 	}
@@ -125,7 +196,7 @@ public class ReservationService {
 
 		reservation.setStatus(ReservationStatus.REJECTED);
 		reservationRepository.save(reservation);
-		recordApproval(reservation, ReservationApprovalAction.REJECTED, request.reason());
+		recordApproval(reservation, authService.getCurrentUserId(), ReservationApprovalAction.REJECTED, request.reason());
 
 		return toResponse(reservation);
 	}
@@ -136,6 +207,9 @@ public class ReservationService {
 		if (reservation.getStatus() == ReservationStatus.CANCELLED) {
 			throw new BusinessException("Reservation is already cancelled");
 		}
+		if (reservation.getStatus() == ReservationStatus.REJECTED) {
+			throw new BusinessException("Cannot cancel a rejected reservation");
+		}
 		if (reservation.getStatus() != ReservationStatus.PENDING
 				&& reservation.getStatus() != ReservationStatus.APPROVED) {
 			throw new BusinessException("Only PENDING or APPROVED reservations can be cancelled");
@@ -145,10 +219,62 @@ public class ReservationService {
 		return toResponse(reservationRepository.save(reservation));
 	}
 
-	private void recordApproval(Reservation reservation, ReservationApprovalAction action, String reason) {
+	@Transactional(readOnly = true)
+	public ReservationStatusSummaryResponse getStatusSummary() {
+		long pending = reservationRepository.countByStatus(ReservationStatus.PENDING);
+		long approved = reservationRepository.countByStatus(ReservationStatus.APPROVED);
+		long rejected = reservationRepository.countByStatus(ReservationStatus.REJECTED);
+		long cancelled = reservationRepository.countByStatus(ReservationStatus.CANCELLED);
+		return new ReservationStatusSummaryResponse(pending, approved, rejected, cancelled);
+	}
+
+	@Transactional(readOnly = true)
+	public List<ResourceReservationSummaryResponse> getResourceSummaries() {
+		List<String> resourceIds = reservationRepository.findDistinctResourceIds();
+		List<ResourceReservationSummaryResponse> summaries = new ArrayList<>();
+		for (String resId : resourceIds) {
+			long total = reservationRepository.countByResourceId(resId);
+			long approved = reservationRepository.countByResourceIdAndStatus(resId, ReservationStatus.APPROVED);
+			long cancelled = reservationRepository.countByResourceIdAndStatus(resId, ReservationStatus.CANCELLED);
+			summaries.add(new ResourceReservationSummaryResponse(resId, total, approved, cancelled));
+		}
+		return summaries;
+	}
+
+	@Transactional(readOnly = true)
+	public List<UsageTrendResponse> getResourceTrend(String resourceId) {
+		List<Reservation> reservations = reservationRepository.findByResourceId(resourceId);
+		DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+		Map<String, Long> trendMap = reservations.stream()
+				.collect(Collectors.groupingBy(r -> r.getStartTime().format(formatter), Collectors.counting()));
+
+		return trendMap.entrySet().stream()
+				.sorted(Map.Entry.comparingByKey())
+				.map(entry -> new UsageTrendResponse(entry.getKey(), entry.getValue()))
+				.toList();
+	}
+
+	private String resolveRequesterId(String requestedRequesterId) {
+		String currentUserId;
+		try {
+			currentUserId = authService.getCurrentUserId();
+		} catch (Exception ex) {
+			currentUserId = null;
+		}
+
+		if (StringUtils.hasText(currentUserId)) {
+			return currentUserId;
+		}
+		if (StringUtils.hasText(requestedRequesterId)) {
+			return requestedRequesterId;
+		}
+		throw new BusinessException("Requester identity could not be determined from authentication context");
+	}
+
+	private void recordApproval(Reservation reservation, String actionBy, ReservationApprovalAction action, String reason) {
 		ReservationApproval approval = new ReservationApproval();
 		approval.setReservation(reservation);
-		approval.setActionBy(authService.getCurrentUserId());
+		approval.setActionBy(actionBy);
 		approval.setAction(action);
 		approval.setReason(reason);
 		approvalRepository.save(approval);
@@ -166,12 +292,12 @@ public class ReservationService {
 		}
 	}
 
-	private void validateWithinOpenHours(FacilityResourceInfo resource, LocalDateTime start, LocalDateTime end) {
-		if (resource.opensAt() == null || resource.closesAt() == null) {
+	private void validateWithinOperatingHours(FacilityResourceValidationData resource, LocalDateTime start, LocalDateTime end) {
+		if (resource.operatingHoursStart() == null || resource.operatingHoursEnd() == null) {
 			return;
 		}
-		LocalTime opensAt = resource.opensAt();
-		LocalTime closesAt = resource.closesAt();
+		LocalTime opensAt = resource.operatingHoursStart();
+		LocalTime closesAt = resource.operatingHoursEnd();
 		LocalTime startTime = start.toLocalTime();
 		LocalTime endTime = end.toLocalTime();
 

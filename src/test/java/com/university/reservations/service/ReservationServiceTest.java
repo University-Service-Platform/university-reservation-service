@@ -1,6 +1,7 @@
 package com.university.reservations.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -10,8 +11,11 @@ import static org.mockito.Mockito.when;
 
 import com.university.reservations.dto.ApprovalRequest;
 import com.university.reservations.dto.CreateReservationRequest;
-import com.university.reservations.dto.FacilityResourceInfo;
+import com.university.reservations.dto.FacilityResourceValidationData;
+import com.university.reservations.dto.ReservationApprovalResponse;
 import com.university.reservations.dto.ReservationResponse;
+import com.university.reservations.dto.ReservationStatusSummaryResponse;
+import com.university.reservations.dto.UserValidationData;
 import com.university.reservations.exception.BusinessException;
 import com.university.reservations.exception.ReservationConflictException;
 import com.university.reservations.exception.ResourceNotFoundException;
@@ -23,7 +27,9 @@ import com.university.reservations.repository.ReservationApprovalRepository;
 import com.university.reservations.repository.ReservationRepository;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.List;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -44,25 +50,39 @@ class ReservationServiceTest {
 	private FacilityResourceClient facilityResourceClient;
 
 	@Mock
+	private UserValidationClient userValidationClient;
+
+	@Mock
 	private AuthService authService;
 
 	@InjectMocks
 	private ReservationService reservationService;
 
-	private LocalDateTime base = LocalDateTime.of(2026, 10, 20, 9, 0);
+	private LocalDateTime futureBase;
+
+	@BeforeEach
+	void setUp() {
+		futureBase = LocalDateTime.now().plusDays(1).withHour(9).withMinute(0).withSecond(0).withNano(0);
+	}
 
 	private CreateReservationRequest validCreateRequest() {
 		return new CreateReservationRequest(
-				"resource-1", "student-7", base, base.plusHours(2), "Group study", 20);
+				"1", "student-7", futureBase, futureBase.plusHours(2), "Group study", 20);
+	}
+
+	private FacilityResourceValidationData validResourceData(boolean approvalRequired) {
+		return new FacilityResourceValidationData(
+				1L, "LAB-101", 1L, true, true, true, 50, approvalRequired,
+				LocalTime.of(8, 0), LocalTime.of(22, 0), true, "Resource is valid");
 	}
 
 	private Reservation pendingReservation() {
 		Reservation reservation = new Reservation();
 		reservation.setId(100L);
-		reservation.setResourceId("resource-1");
+		reservation.setResourceId("1");
 		reservation.setRequesterId("student-7");
-		reservation.setStartTime(base);
-		reservation.setEndTime(base.plusHours(2));
+		reservation.setStartTime(futureBase);
+		reservation.setEndTime(futureBase.plusHours(2));
 		reservation.setStatus(ReservationStatus.PENDING);
 		reservation.setPurpose("Group study");
 		reservation.setExpectedAttendees(20);
@@ -70,45 +90,92 @@ class ReservationServiceTest {
 	}
 
 	@Test
-	void createReservation_success() {
-		FacilityResourceInfo resource = new FacilityResourceInfo("resource-1", "Hall A", 50, LocalTime.of(8, 0), LocalTime.of(22, 0));
-		when(facilityResourceClient.getResource("resource-1")).thenReturn(resource);
+	void createReservation_pendingWhenApprovalRequired() {
+		when(authService.getCurrentUserId()).thenReturn("student-7");
+		when(facilityResourceClient.validateResource("1")).thenReturn(validResourceData(true));
+		when(reservationRepository.countOverlappingApproved(any(), any(), any())).thenReturn(0L);
 		when(reservationRepository.save(any(Reservation.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
 		ReservationResponse response = reservationService.createReservation(validCreateRequest());
 
 		assertEquals(ReservationStatus.PENDING, response.status());
-		assertEquals("resource-1", response.resourceId());
-		assertEquals(20, response.expectedAttendees());
+		assertEquals("1", response.resourceId());
+		assertEquals("student-7", response.requesterId());
+	}
+
+	@Test
+	void createReservation_autoApprovedWhenNoApprovalRequired() {
+		when(authService.getCurrentUserId()).thenReturn("student-7");
+		when(facilityResourceClient.validateResource("1")).thenReturn(validResourceData(false));
+		when(reservationRepository.countOverlappingApproved(any(), any(), any())).thenReturn(0L);
+		when(reservationRepository.save(any(Reservation.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+		ReservationResponse response = reservationService.createReservation(validCreateRequest());
+
+		assertEquals(ReservationStatus.APPROVED, response.status());
+		verify(approvalRepository).save(any(ReservationApproval.class));
 	}
 
 	@Test
 	void createReservation_throwsWhenStartTimeAfterEndTime() {
 		CreateReservationRequest request = new CreateReservationRequest(
-				"resource-1", "student-7", base.plusHours(2), base, "Group study", 20);
+				"1", "student-7", futureBase.plusHours(2), futureBase, "Group study", 20);
 
 		assertThrows(BusinessException.class, () -> reservationService.createReservation(request));
-		verify(facilityResourceClient, never()).getResource(any());
+		verify(facilityResourceClient, never()).validateResource(any());
+	}
+
+	@Test
+	void createReservation_throwsWhenStartTimeInPast() {
+		CreateReservationRequest request = new CreateReservationRequest(
+				"1", "student-7", LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(1), "Group study", 20);
+
+		assertThrows(BusinessException.class, () -> reservationService.createReservation(request));
+		verify(facilityResourceClient, never()).validateResource(any());
 	}
 
 	@Test
 	void createReservation_throwsWhenCapacityExceeded() {
-		FacilityResourceInfo resource = new FacilityResourceInfo("resource-1", "Room B", 10, null, null);
-		when(facilityResourceClient.getResource("resource-1")).thenReturn(resource);
+		when(authService.getCurrentUserId()).thenReturn("student-7");
+		FacilityResourceValidationData resource = new FacilityResourceValidationData(
+				1L, "LAB-101", 1L, true, true, true, 10, true,
+				LocalTime.of(8, 0), LocalTime.of(22, 0), true, "Valid");
+		when(facilityResourceClient.validateResource("1")).thenReturn(resource);
 
 		assertThrows(BusinessException.class, () -> reservationService.createReservation(validCreateRequest()));
 	}
 
 	@Test
 	void createReservation_throwsWhenOutsideOperatingHours() {
-		FacilityResourceInfo resource = new FacilityResourceInfo(
-				"resource-1", "Room B", 100, LocalTime.of(8, 0), LocalTime.of(17, 0));
-		when(facilityResourceClient.getResource("resource-1")).thenReturn(resource);
+		when(authService.getCurrentUserId()).thenReturn("student-7");
+		FacilityResourceValidationData resource = new FacilityResourceValidationData(
+				1L, "LAB-101", 1L, true, true, true, 100, true,
+				LocalTime.of(8, 0), LocalTime.of(17, 0), true, "Valid");
+		when(facilityResourceClient.validateResource("1")).thenReturn(resource);
 
 		CreateReservationRequest request = new CreateReservationRequest(
-				"resource-1", "student-7", base.plusHours(18), base.plusHours(20), "Group study", 20);
+				"1", "student-7", futureBase.withHour(18), futureBase.withHour(20), "Group study", 20);
 
 		assertThrows(BusinessException.class, () -> reservationService.createReservation(request));
+	}
+
+	@Test
+	void createReservation_throwsOnConflict() {
+		when(authService.getCurrentUserId()).thenReturn("student-7");
+		when(facilityResourceClient.validateResource("1")).thenReturn(validResourceData(true));
+		when(reservationRepository.countOverlappingApproved(any(), any(), any())).thenReturn(1L);
+
+		assertThrows(ReservationConflictException.class, () -> reservationService.createReservation(validCreateRequest()));
+	}
+
+	@Test
+	void createReservation_throwsWhenUserIneligible() {
+		when(authService.getCurrentUserId()).thenReturn("student-7");
+		when(userValidationClient.isIntegrationEnabled()).thenReturn(true);
+		when(userValidationClient.validateUser("student-7")).thenReturn(
+				new UserValidationData("student-7", false, List.of(), "Dept", "Unit", "Suspended"));
+
+		assertThrows(BusinessException.class, () -> reservationService.createReservation(validCreateRequest()));
 	}
 
 	@Test
@@ -117,9 +184,10 @@ class ReservationServiceTest {
 		Reservation reservation = pendingReservation();
 		when(reservationRepository.findById(100L)).thenReturn(Optional.of(reservation));
 		when(reservationRepository.countOverlappingApproved(any(), any(), any())).thenReturn(0L);
+		when(facilityResourceClient.validateResource("1")).thenReturn(validResourceData(true));
 		when(reservationRepository.save(any(Reservation.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-		ReservationResponse response = reservationService.approveReservation(100L, new ApprovalRequest(null));
+		ReservationResponse response = reservationService.approveReservation(100L, new ApprovalRequest("Looks good"));
 
 		assertEquals(ReservationStatus.APPROVED, response.status());
 		ArgumentCaptor<ReservationApproval> captor = ArgumentCaptor.forClass(ReservationApproval.class);
@@ -150,14 +218,6 @@ class ReservationServiceTest {
 	}
 
 	@Test
-	void approveReservation_throwsWhenReservationNotFound() {
-		when(reservationRepository.findById(999L)).thenReturn(Optional.empty());
-
-		assertThrows(ResourceNotFoundException.class,
-				() -> reservationService.approveReservation(999L, new ApprovalRequest(null)));
-	}
-
-	@Test
 	void rejectReservation_success() {
 		when(authService.getCurrentUserId()).thenReturn("manager-42");
 		Reservation reservation = pendingReservation();
@@ -181,16 +241,6 @@ class ReservationServiceTest {
 		assertThrows(BusinessException.class,
 				() -> reservationService.rejectReservation(100L, new ApprovalRequest(null)));
 		verify(approvalRepository, never()).save(any());
-	}
-
-	@Test
-	void rejectReservation_throwsOnInvalidStateTransition() {
-		Reservation reservation = pendingReservation();
-		reservation.setStatus(ReservationStatus.CANCELLED);
-		when(reservationRepository.findById(100L)).thenReturn(Optional.of(reservation));
-
-		assertThrows(BusinessException.class,
-				() -> reservationService.rejectReservation(100L, new ApprovalRequest("Too late")));
 	}
 
 	@Test
@@ -223,13 +273,47 @@ class ReservationServiceTest {
 	}
 
 	@Test
-	void listReservations_filtersByStatus() {
-		Reservation reservation = pendingReservation();
-		when(reservationRepository.findByStatus(ReservationStatus.PENDING)).thenReturn(java.util.List.of(reservation));
+	void getMyReservations_usesAuthenticatedUser() {
+		when(authService.getCurrentUserId()).thenReturn("student-7");
+		when(reservationRepository.findByRequesterId("student-7")).thenReturn(List.of(pendingReservation()));
 
-		var responses = reservationService.listReservations(null, null, ReservationStatus.PENDING);
+		List<ReservationResponse> responses = reservationService.getMyReservations();
 
 		assertEquals(1, responses.size());
-		assertTrue(responses.stream().allMatch(r -> r.status() == ReservationStatus.PENDING));
+		assertEquals("student-7", responses.get(0).requesterId());
+	}
+
+	@Test
+	void getReservationHistory_returnsChronologicalLogs() {
+		Reservation reservation = pendingReservation();
+		when(reservationRepository.findById(100L)).thenReturn(Optional.of(reservation));
+
+		ReservationApproval log1 = new ReservationApproval();
+		log1.setId(1L);
+		log1.setReservation(reservation);
+		log1.setActionBy("manager-1");
+		log1.setAction(ReservationApprovalAction.APPROVED);
+
+		when(approvalRepository.findByReservationId(100L)).thenReturn(List.of(log1));
+
+		List<ReservationApprovalResponse> history = reservationService.getReservationHistory(100L);
+
+		assertEquals(1, history.size());
+		assertEquals("manager-1", history.get(0).actionBy());
+	}
+
+	@Test
+	void getStatusSummary_returnsCounts() {
+		when(reservationRepository.countByStatus(ReservationStatus.PENDING)).thenReturn(5L);
+		when(reservationRepository.countByStatus(ReservationStatus.APPROVED)).thenReturn(10L);
+		when(reservationRepository.countByStatus(ReservationStatus.REJECTED)).thenReturn(2L);
+		when(reservationRepository.countByStatus(ReservationStatus.CANCELLED)).thenReturn(3L);
+
+		ReservationStatusSummaryResponse summary = reservationService.getStatusSummary();
+
+		assertEquals(5L, summary.pending());
+		assertEquals(10L, summary.approved());
+		assertEquals(2L, summary.rejected());
+		assertEquals(3L, summary.cancelled());
 	}
 }

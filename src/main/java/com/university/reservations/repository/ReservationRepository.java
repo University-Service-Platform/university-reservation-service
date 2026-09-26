@@ -24,4 +24,13 @@ public interface ReservationRepository extends JpaRepository<Reservation, Long> 
 	List<Reservation> findByResourceId(String resourceId);
 
 	List<Reservation> findByStatus(ReservationStatus status);
+
+	long countByStatus(ReservationStatus status);
+
+	long countByResourceId(String resourceId);
+
+	long countByResourceIdAndStatus(String resourceId, ReservationStatus status);
+
+	@Query("SELECT DISTINCT r.resourceId FROM Reservation r")
+	List<String> findDistinctResourceIds();
 }
