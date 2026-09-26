@@ -3,13 +3,14 @@ package com.university.reservations.service;
 import com.university.reservations.dto.ApprovalRequest;
 import com.university.reservations.dto.CreateReservationRequest;
 import com.university.reservations.dto.FacilityResourceValidationData;
+import com.university.reservations.dto.Group5EligibilityData;
+import com.university.reservations.dto.Group5UserValidationData;
 import com.university.reservations.dto.ReservationApprovalResponse;
 import com.university.reservations.dto.ReservationResponse;
 import com.university.reservations.dto.ReservationStatusSummaryResponse;
 import com.university.reservations.dto.ResourceAvailabilityData;
 import com.university.reservations.dto.ResourceReservationSummaryResponse;
 import com.university.reservations.dto.UsageTrendResponse;
-import com.university.reservations.dto.UserValidationData;
 import com.university.reservations.exception.BusinessException;
 import com.university.reservations.exception.ReservationConflictException;
 import com.university.reservations.exception.ResourceNotFoundException;
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -55,17 +57,16 @@ public class ReservationService {
 	public ReservationResponse createReservation(CreateReservationRequest request) {
 		request.validate();
 
+		// 1. Obtain requester ID from JWT sub (do not trust requesterId from body when authenticated user is present)
 		String requesterId = resolveRequesterId(request.requesterId());
 
-		// Optional Group 5 User Eligibility check
-		if (userValidationClient.isIntegrationEnabled()) {
-			UserValidationData userData = userValidationClient.validateUser(requesterId);
-			if (!userData.active()) {
-				throw new BusinessException("Requester is not active or eligible to make reservations");
-			}
+		// 2. Validate requester through Group 5 Identity Service
+		Group5UserValidationData userData = userValidationClient.validateUser(requesterId);
+		if (userData == null || !Boolean.TRUE.equals(userData.isValid())) {
+			throw new BusinessException("Requester is not active or valid in Identity Service");
 		}
 
-		// STEP 1: Resource Validation
+		// 3. Validate resource through facility-resource-service
 		FacilityResourceValidationData validationData = facilityResourceClient.validateResource(request.resourceId());
 		if (Boolean.FALSE.equals(validationData.exists())) {
 			throw new ResourceNotFoundException("Resource with ID " + request.resourceId() + " does not exist");
@@ -75,14 +76,17 @@ public class ReservationService {
 			throw new BusinessException("Resource invalid for reservation: " + msg);
 		}
 
-		// STEP 2: Resource Availability Check
-		String userRole = "STUDENT"; // Default or derived from security context if available
+		// 4. Check facility availability / capacity / operating hours
+		String primaryRole = (userData.roles() != null && !userData.roles().isEmpty())
+				? userData.roles().get(0)
+				: "STUDENT";
+
 		ResourceAvailabilityData availabilityData = facilityResourceClient.checkAvailability(
 				request.resourceId(),
 				request.startTime(),
 				request.endTime(),
 				request.expectedAttendees(),
-				userRole);
+				primaryRole);
 
 		if (Boolean.FALSE.equals(availabilityData.available())) {
 			if (Boolean.FALSE.equals(availabilityData.withinOperatingHours())) {
@@ -98,14 +102,14 @@ public class ReservationService {
 			throw new BusinessException(msg);
 		}
 
-		// STEP 3: Check database for overlapping APPROVED reservations
+		// 5. Check reservation-service overlap
 		long overlaps = reservationRepository.countOverlappingApproved(
 				request.resourceId(), request.startTime(), request.endTime());
 		if (overlaps > 0) {
 			throw new ReservationConflictException("Resource is already reserved for the requested time period.");
 		}
 
-		// STEP 4: Determine initial status based on approvalRequired
+		// 6. Determine PENDING vs APPROVED
 		boolean approvalRequired = Boolean.TRUE.equals(availabilityData.approvalRequired())
 				|| Boolean.TRUE.equals(validationData.approvalRequired());
 
@@ -128,6 +132,24 @@ public class ReservationService {
 		}
 
 		return toResponse(reservation);
+	}
+
+	public Group5EligibilityData validateUserEligibility(
+			String userId,
+			String requiredRole,
+			String relationship,
+			String departmentId,
+			String facultyId,
+			String serviceUnitId) {
+		Group5EligibilityData data = userValidationClient.validateEligibility(
+				userId, requiredRole, relationship, departmentId, facultyId, serviceUnitId, null);
+		if (data == null || !Boolean.TRUE.equals(data.eligible())) {
+			String details = (data != null && data.reasons() != null && !data.reasons().isEmpty())
+					? String.join(", ", data.reasons())
+					: (data != null && data.message() != null ? data.message() : "User is not eligible");
+			throw new BusinessException("Eligibility validation failed: " + details);
+		}
+		return data;
 	}
 
 	@Transactional(readOnly = true)
@@ -164,6 +186,7 @@ public class ReservationService {
 	@Transactional(readOnly = true)
 	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
 	public List<ReservationResponse> getPendingReservations() {
+		verifyActiveResourceManager();
 		return reservationRepository.findByStatus(ReservationStatus.PENDING)
 				.stream().map(this::toResponse).toList();
 	}
@@ -193,6 +216,8 @@ public class ReservationService {
 	@Transactional
 	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
 	public ReservationResponse approveReservation(Long id, ApprovalRequest request) {
+		verifyActiveResourceManager();
+
 		Reservation reservation = findReservation(id);
 		ensurePending(reservation);
 
@@ -215,6 +240,8 @@ public class ReservationService {
 	@Transactional
 	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
 	public ReservationResponse rejectReservation(Long id, ApprovalRequest request) {
+		verifyActiveResourceManager();
+
 		Reservation reservation = findReservation(id);
 		ensurePending(reservation);
 
@@ -280,6 +307,14 @@ public class ReservationService {
 				.sorted(Map.Entry.comparingByKey())
 				.map(entry -> new UsageTrendResponse(entry.getKey(), entry.getValue()))
 				.toList();
+	}
+
+	private void verifyActiveResourceManager() {
+		String managerId = authService.getCurrentUserId();
+		Group5UserValidationData validation = userValidationClient.validateUserWithRole(managerId, "RESOURCE_MANAGER");
+		if (validation == null || !Boolean.TRUE.equals(validation.isValid()) || !Boolean.TRUE.equals(validation.isAuthorized())) {
+			throw new AccessDeniedException("Authenticated user is not an active RESOURCE_MANAGER in Identity Service");
+		}
 	}
 
 	private String resolveRequesterId(String requestedRequesterId) {
