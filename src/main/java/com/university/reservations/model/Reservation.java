@@ -20,8 +20,8 @@ public class Reservation {
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
 
-	@Column(nullable = false, length = 64)
-	private String resourceId;
+	@Column(nullable = false)
+	private Long resourceId;
 
 	@Column(nullable = false, length = 64)
 	private String requesterId;
@@ -68,11 +68,11 @@ public class Reservation {
 		this.id = id;
 	}
 
-	public String getResourceId() {
+	public Long getResourceId() {
 		return resourceId;
 	}
 
-	public void setResourceId(String resourceId) {
+	public void setResourceId(Long resourceId) {
 		this.resourceId = resourceId;
 	}
 

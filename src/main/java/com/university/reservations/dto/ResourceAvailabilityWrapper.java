@@ -1,8 +1,8 @@
 package com.university.reservations.dto;
 
-public record FacilityResourceValidationWrapper(
+public record ResourceAvailabilityWrapper(
 		Boolean success,
 		String message,
-		FacilityResourceValidationData data,
+		ResourceAvailabilityData data,
 		String timestamp) {
 }

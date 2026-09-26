@@ -37,7 +37,7 @@ public class ReservationController {
 
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
-	@Operation(summary = "Create a new reservation", description = "Validates resource availability, capacity, and operating hours via Group 6 facility-resource-service before saving.")
+	@Operation(summary = "Create a new reservation", description = "Validates resource validation and availability via Group 6 facility-resource-service before saving.")
 	public ReservationResponse create(@RequestBody @Valid CreateReservationRequest request) {
 		return reservationService.createReservation(request);
 	}
@@ -46,7 +46,7 @@ public class ReservationController {
 	@Operation(summary = "List reservations", description = "Filters reservations by requester, resource, or status.")
 	public List<ReservationResponse> list(
 			@RequestParam(required = false) String requesterId,
-			@RequestParam(required = false) String resourceId,
+			@RequestParam(required = false) Long resourceId,
 			@RequestParam(required = false) ReservationStatus status) {
 		return reservationService.listReservations(requesterId, resourceId, status);
 	}
@@ -111,7 +111,7 @@ public class ReservationController {
 
 	@GetMapping("/summary/resources/{resourceId}/trend")
 	@Operation(summary = "View usage trends by resource", description = "Returns daily usage trend count for a specific resource.")
-	public List<UsageTrendResponse> getResourceTrend(@PathVariable String resourceId) {
+	public List<UsageTrendResponse> getResourceTrend(@PathVariable Long resourceId) {
 		return reservationService.getResourceTrend(resourceId);
 	}
 }

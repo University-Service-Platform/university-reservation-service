@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import java.time.LocalTime;
 
 public record FacilityResourceValidationData(
-		Object resourceId,
+		Long resourceId,
 		String resourceCode,
 		Long facilityId,
 		Boolean exists,

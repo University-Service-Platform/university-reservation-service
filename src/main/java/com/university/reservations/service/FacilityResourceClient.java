@@ -1,11 +1,12 @@
 package com.university.reservations.service;
 
 import com.university.reservations.dto.FacilityResourceValidationData;
+import com.university.reservations.dto.ResourceAvailabilityData;
 import java.time.LocalDateTime;
 
 public interface FacilityResourceClient {
 
-	FacilityResourceValidationData validateResource(String resourceId);
+	FacilityResourceValidationData validateResource(Long resourceId);
 
-	boolean checkAvailability(String resourceId, LocalDateTime startTime, LocalDateTime endTime);
+	ResourceAvailabilityData checkAvailability(Long resourceId, LocalDateTime startTime, LocalDateTime endTime, Integer requestedCapacity, String userRole);
 }

@@ -49,13 +49,13 @@ class ReservationControllerTest {
 	private final LocalDateTime base = LocalDateTime.now().plusDays(1).withHour(9).withMinute(0);
 
 	private final ReservationResponse response = new ReservationResponse(
-			1L, "1", "student-7", base, base.plusHours(2),
+			1L, 1L, "student-7", base, base.plusHours(2),
 			ReservationStatus.PENDING, "Group study", 20, base, base);
 
 	private String createdRequestBody() {
 		return """
 				{
-				  "resourceId": "1",
+				  "resourceId": 1,
 				  "requesterId": "student-7",
 				  "startTime": "%s",
 				  "endTime": "%s",
@@ -83,7 +83,7 @@ class ReservationControllerTest {
 	void create_returns400ForInvalidBody() throws Exception {
 		String invalid = """
 				{
-				  "resourceId": "1",
+				  "resourceId": null,
 				  "requesterId": "student-7",
 				  "startTime": "%s",
 				  "endTime": "%s",
@@ -202,7 +202,7 @@ class ReservationControllerTest {
 	@Test
 	@WithMockUser
 	void getResourceSummaries_returns200() throws Exception {
-		when(reservationService.getResourceSummaries()).thenReturn(List.of(new ResourceReservationSummaryResponse("1", 5, 4, 1)));
+		when(reservationService.getResourceSummaries()).thenReturn(List.of(new ResourceReservationSummaryResponse(1L, 5, 4, 1)));
 
 		mockMvc.perform(get("/api/v1/reservations/summary/resources"))
 				.andExpect(status().isOk());
@@ -211,7 +211,7 @@ class ReservationControllerTest {
 	@Test
 	@WithMockUser
 	void getResourceTrend_returns200() throws Exception {
-		when(reservationService.getResourceTrend("1")).thenReturn(List.of(new UsageTrendResponse("2026-10-20", 3)));
+		when(reservationService.getResourceTrend(1L)).thenReturn(List.of(new UsageTrendResponse("2026-10-20", 3)));
 
 		mockMvc.perform(get("/api/v1/reservations/summary/resources/1/trend"))
 				.andExpect(status().isOk());

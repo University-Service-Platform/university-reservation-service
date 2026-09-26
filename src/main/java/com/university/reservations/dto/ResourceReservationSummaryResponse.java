@@ -1,7 +1,7 @@
 package com.university.reservations.dto;
 
 public record ResourceReservationSummaryResponse(
-		String resourceId,
+		Long resourceId,
 		long totalReservations,
 		long approvedReservations,
 		long cancelledReservations) {

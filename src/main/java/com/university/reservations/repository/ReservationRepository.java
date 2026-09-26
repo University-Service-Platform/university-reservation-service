@@ -15,22 +15,22 @@ public interface ReservationRepository extends JpaRepository<Reservation, Long> 
 	@Query("SELECT COUNT(r) FROM Reservation r WHERE r.resourceId = :resourceId "
 			+ "AND r.status = com.university.reservations.model.ReservationStatus.APPROVED "
 			+ "AND (r.startTime < :endTime AND r.endTime > :startTime)")
-	long countOverlappingApproved(@Param("resourceId") String resourceId,
+	long countOverlappingApproved(@Param("resourceId") Long resourceId,
 			@Param("startTime") LocalDateTime startTime,
 			@Param("endTime") LocalDateTime endTime);
 
 	List<Reservation> findByRequesterId(String requesterId);
 
-	List<Reservation> findByResourceId(String resourceId);
+	List<Reservation> findByResourceId(Long resourceId);
 
 	List<Reservation> findByStatus(ReservationStatus status);
 
 	long countByStatus(ReservationStatus status);
 
-	long countByResourceId(String resourceId);
+	long countByResourceId(Long resourceId);
 
-	long countByResourceIdAndStatus(String resourceId, ReservationStatus status);
+	long countByResourceIdAndStatus(Long resourceId, ReservationStatus status);
 
 	@Query("SELECT DISTINCT r.resourceId FROM Reservation r")
-	List<String> findDistinctResourceIds();
+	List<Long> findDistinctResourceIds();
 }

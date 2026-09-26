@@ -8,7 +8,7 @@ import jakarta.validation.constraints.Size;
 import java.time.LocalDateTime;
 
 public record CreateReservationRequest(
-		@NotBlank @Size(max = 64) String resourceId,
+		@NotNull Long resourceId,
 		@Size(max = 64) String requesterId,
 		@NotNull LocalDateTime startTime,
 		@NotNull LocalDateTime endTime,

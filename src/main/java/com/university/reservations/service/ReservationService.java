@@ -6,6 +6,7 @@ import com.university.reservations.dto.FacilityResourceValidationData;
 import com.university.reservations.dto.ReservationApprovalResponse;
 import com.university.reservations.dto.ReservationResponse;
 import com.university.reservations.dto.ReservationStatusSummaryResponse;
+import com.university.reservations.dto.ResourceAvailabilityData;
 import com.university.reservations.dto.ResourceReservationSummaryResponse;
 import com.university.reservations.dto.UsageTrendResponse;
 import com.university.reservations.dto.UserValidationData;
@@ -19,7 +20,6 @@ import com.university.reservations.model.ReservationStatus;
 import com.university.reservations.repository.ReservationApprovalRepository;
 import com.university.reservations.repository.ReservationRepository;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -57,6 +57,7 @@ public class ReservationService {
 
 		String requesterId = resolveRequesterId(request.requesterId());
 
+		// Optional Group 5 User Eligibility check
 		if (userValidationClient.isIntegrationEnabled()) {
 			UserValidationData userData = userValidationClient.validateUser(requesterId);
 			if (!userData.active()) {
@@ -64,22 +65,49 @@ public class ReservationService {
 			}
 		}
 
-		FacilityResourceValidationData resourceData = facilityResourceClient.validateResource(request.resourceId());
-
-		if (resourceData.capacity() != null && request.expectedAttendees() > resourceData.capacity()) {
-			throw new BusinessException("expectedAttendees (" + request.expectedAttendees()
-					+ ") exceeds resource capacity of " + resourceData.capacity());
+		// STEP 1: Resource Validation
+		FacilityResourceValidationData validationData = facilityResourceClient.validateResource(request.resourceId());
+		if (Boolean.FALSE.equals(validationData.exists())) {
+			throw new ResourceNotFoundException("Resource with ID " + request.resourceId() + " does not exist");
+		}
+		if (Boolean.FALSE.equals(validationData.validForReservation())) {
+			String msg = validationData.message() != null ? validationData.message() : "Resource is not valid for reservation";
+			throw new BusinessException("Resource invalid for reservation: " + msg);
 		}
 
-		validateWithinOperatingHours(resourceData, request.startTime(), request.endTime());
+		// STEP 2: Resource Availability Check
+		String userRole = "STUDENT"; // Default or derived from security context if available
+		ResourceAvailabilityData availabilityData = facilityResourceClient.checkAvailability(
+				request.resourceId(),
+				request.startTime(),
+				request.endTime(),
+				request.expectedAttendees(),
+				userRole);
 
+		if (Boolean.FALSE.equals(availabilityData.available())) {
+			if (Boolean.FALSE.equals(availabilityData.withinOperatingHours())) {
+				throw new BusinessException("Requested time is outside facility operating hours");
+			}
+			if (Boolean.FALSE.equals(availabilityData.capacitySufficient())) {
+				throw new BusinessException("Expected attendees exceed resource capacity");
+			}
+			if (Boolean.FALSE.equals(availabilityData.userEligible())) {
+				throw new BusinessException("User is not eligible to reserve this resource");
+			}
+			String msg = availabilityData.message() != null ? availabilityData.message() : "Resource is unavailable for reservation";
+			throw new BusinessException(msg);
+		}
+
+		// STEP 3: Check database for overlapping APPROVED reservations
 		long overlaps = reservationRepository.countOverlappingApproved(
 				request.resourceId(), request.startTime(), request.endTime());
 		if (overlaps > 0) {
 			throw new ReservationConflictException("Resource is already reserved for the requested time period.");
 		}
 
-		boolean approvalRequired = Boolean.TRUE.equals(resourceData.approvalRequired());
+		// STEP 4: Determine initial status based on approvalRequired
+		boolean approvalRequired = Boolean.TRUE.equals(availabilityData.approvalRequired())
+				|| Boolean.TRUE.equals(validationData.approvalRequired());
 
 		Reservation reservation = new Reservation();
 		reservation.setResourceId(request.resourceId());
@@ -108,7 +136,7 @@ public class ReservationService {
 	}
 
 	@Transactional(readOnly = true)
-	public List<ReservationResponse> listReservations(String requesterId, String resourceId, ReservationStatus status) {
+	public List<ReservationResponse> listReservations(String requesterId, Long resourceId, ReservationStatus status) {
 		List<Reservation> result;
 		if (status != null) {
 			result = new ArrayList<>(reservationRepository.findByStatus(status));
@@ -230,9 +258,9 @@ public class ReservationService {
 
 	@Transactional(readOnly = true)
 	public List<ResourceReservationSummaryResponse> getResourceSummaries() {
-		List<String> resourceIds = reservationRepository.findDistinctResourceIds();
+		List<Long> resourceIds = reservationRepository.findDistinctResourceIds();
 		List<ResourceReservationSummaryResponse> summaries = new ArrayList<>();
-		for (String resId : resourceIds) {
+		for (Long resId : resourceIds) {
 			long total = reservationRepository.countByResourceId(resId);
 			long approved = reservationRepository.countByResourceIdAndStatus(resId, ReservationStatus.APPROVED);
 			long cancelled = reservationRepository.countByResourceIdAndStatus(resId, ReservationStatus.CANCELLED);
@@ -242,7 +270,7 @@ public class ReservationService {
 	}
 
 	@Transactional(readOnly = true)
-	public List<UsageTrendResponse> getResourceTrend(String resourceId) {
+	public List<UsageTrendResponse> getResourceTrend(Long resourceId) {
 		List<Reservation> reservations = reservationRepository.findByResourceId(resourceId);
 		DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 		Map<String, Long> trendMap = reservations.stream()
@@ -289,25 +317,6 @@ public class ReservationService {
 		if (reservation.getStatus() != ReservationStatus.PENDING) {
 			throw new BusinessException("Only PENDING reservations can be approved or rejected, current status: "
 					+ reservation.getStatus());
-		}
-	}
-
-	private void validateWithinOperatingHours(FacilityResourceValidationData resource, LocalDateTime start, LocalDateTime end) {
-		if (resource.operatingHoursStart() == null || resource.operatingHoursEnd() == null) {
-			return;
-		}
-		LocalTime opensAt = resource.operatingHoursStart();
-		LocalTime closesAt = resource.operatingHoursEnd();
-		LocalTime startTime = start.toLocalTime();
-		LocalTime endTime = end.toLocalTime();
-
-		boolean within = (closesAt.isAfter(opensAt) || closesAt.equals(opensAt))
-				? !startTime.isBefore(opensAt) && !endTime.isAfter(closesAt)
-				: !startTime.isBefore(opensAt) || !endTime.isAfter(closesAt);
-
-		if (!within) {
-			throw new BusinessException("Requested time is outside facility operating hours ("
-					+ opensAt + " - " + closesAt + ")");
 		}
 	}
 

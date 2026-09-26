@@ -3,6 +3,8 @@ package com.university.reservations.service;
 import com.university.reservations.dto.FacilityResourceValidationData;
 import com.university.reservations.dto.FacilityResourceValidationWrapper;
 import com.university.reservations.dto.ResourceAvailabilityCheckRequest;
+import com.university.reservations.dto.ResourceAvailabilityData;
+import com.university.reservations.dto.ResourceAvailabilityWrapper;
 import com.university.reservations.exception.BusinessException;
 import com.university.reservations.exception.ResourceNotFoundException;
 import java.time.LocalDateTime;
@@ -26,7 +28,7 @@ public class RestClientFacilityResourceClient implements FacilityResourceClient 
 	}
 
 	@Override
-	public FacilityResourceValidationData validateResource(String resourceId) {
+	public FacilityResourceValidationData validateResource(Long resourceId) {
 		try {
 			FacilityResourceValidationWrapper response = restClient.get()
 					.uri("/api/resources/{id}/validate", resourceId)
@@ -34,27 +36,31 @@ public class RestClientFacilityResourceClient implements FacilityResourceClient 
 					.body(FacilityResourceValidationWrapper.class);
 
 			if (response == null || response.data() == null) {
-				throw new BusinessException("Received empty or malformed response from facility-resource-service for resource: " + resourceId);
+				throw new BusinessException("Received empty or malformed validation response from facility-resource-service for resource: " + resourceId);
 			}
 
 			FacilityResourceValidationData data = response.data();
+
+			// CRITICAL: Validation endpoint returns HTTP 200 even when resource does not exist.
 			if (Boolean.FALSE.equals(data.exists())) {
-				throw new ResourceNotFoundException("Resource does not exist: " + resourceId);
+				String msg = data.message() != null ? data.message() : "Resource with ID " + resourceId + " does not exist";
+				throw new ResourceNotFoundException(msg);
 			}
+
 			if (Boolean.FALSE.equals(data.active())) {
 				throw new BusinessException("Resource is inactive: " + resourceId);
 			}
-			if (Boolean.FALSE.equals(data.available())) {
-				throw new BusinessException("Resource is currently unavailable for reservation: " + resourceId);
-			}
+
 			if (Boolean.FALSE.equals(data.validForReservation())) {
 				String msg = data.message() != null ? data.message() : "Resource is not valid for reservation";
 				throw new BusinessException("Resource invalid for reservation: " + msg);
 			}
 
 			return data;
+		} catch (BusinessException ex) {
+			throw ex;
 		} catch (HttpClientErrorException.NotFound ex) {
-			throw new ResourceNotFoundException("Facility resource not found: " + resourceId);
+			throw new ResourceNotFoundException("Resource with ID " + resourceId + " does not exist");
 		} catch (HttpClientErrorException | org.springframework.web.client.HttpServerErrorException ex) {
 			log.error("Facility resource service HTTP error for resource {}: {}", resourceId, ex.getMessage());
 			throw new BusinessException("Facility resource service error (" + ex.getStatusCode() + "): " + ex.getStatusText());
@@ -65,22 +71,37 @@ public class RestClientFacilityResourceClient implements FacilityResourceClient 
 	}
 
 	@Override
-	public boolean checkAvailability(String resourceId, LocalDateTime startTime, LocalDateTime endTime) {
+	public ResourceAvailabilityData checkAvailability(Long resourceId, LocalDateTime startTime, LocalDateTime endTime, Integer requestedCapacity, String userRole) {
 		try {
-			ResourceAvailabilityCheckRequest request = new ResourceAvailabilityCheckRequest(resourceId, startTime, endTime);
-			FacilityResourceValidationWrapper response = restClient.post()
+			ResourceAvailabilityCheckRequest request = new ResourceAvailabilityCheckRequest(
+					resourceId,
+					startTime.toLocalDate(),
+					startTime.toLocalTime(),
+					endTime.toLocalTime(),
+					requestedCapacity,
+					userRole);
+
+			ResourceAvailabilityWrapper response = restClient.post()
 					.uri("/api/resources/check-availability")
 					.body(request)
 					.retrieve()
-					.body(FacilityResourceValidationWrapper.class);
+					.body(ResourceAvailabilityWrapper.class);
 
 			if (response == null || response.data() == null) {
-				return false;
+				throw new BusinessException("Received empty or malformed availability response from facility-resource-service for resource: " + resourceId);
 			}
-			return Boolean.TRUE.equals(response.data().available());
-		} catch (Exception ex) {
-			log.warn("Availability check endpoint failed for resource {}: {}", resourceId, ex.getMessage());
-			return true; // Fallback to validation check
+
+			return response.data();
+		} catch (BusinessException ex) {
+			throw ex;
+		} catch (HttpClientErrorException.NotFound ex) {
+			throw new ResourceNotFoundException("Resource with ID " + resourceId + " does not exist");
+		} catch (HttpClientErrorException | org.springframework.web.client.HttpServerErrorException ex) {
+			log.error("Facility resource availability check HTTP error for resource {}: {}", resourceId, ex.getMessage());
+			throw new BusinessException("Facility resource availability check failed (" + ex.getStatusCode() + "): " + ex.getStatusText());
+		} catch (RestClientException ex) {
+			log.error("Failed to connect to facility-resource-service availability check: {}", ex.getMessage());
+			throw new BusinessException("Facility resource service connection failed or timed out: " + ex.getMessage());
 		}
 	}
 }
