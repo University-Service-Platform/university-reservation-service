@@ -25,7 +25,7 @@ Microservice for managing university facility reservations, approval workflows, 
 - **Framework**: Spring Boot 4.1.1
 - **Database**: MySQL 8.0 (Production / Docker), H2 (Local Dev / Tests)
 - **Security**: Spring Security OAuth2 Resource Server (JWT)
-- **API Documentation**: SpringDoc OpenAPI / Swagger UI 3.0.2
+- **API Documentation**: SpringDoc OpenAPI / Swagger UI 3.1.1
 - **Build Tool**: Gradle 8.10+ / 9.x Wrapper
 
 ---
