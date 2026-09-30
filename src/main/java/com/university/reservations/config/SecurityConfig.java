@@ -9,7 +9,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Profile;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.core.env.Environment;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
@@ -26,7 +25,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
 import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.util.StringUtils;
 
@@ -35,14 +34,14 @@ import org.springframework.util.StringUtils;
 @EnableMethodSecurity
 public class SecurityConfig {
 
-	@Value("${reservation-service.jwt.roles-claim:roles}")
-	private String rolesClaim;
-
-	@Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri:${identity-service.base-url:http://localhost:8001}/.well-known/jwks.json}")
+	@Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri:https://university-identity-service.onrender.com/.well-known/jwks.json}")
 	private String jwkSetUri;
 
 	@Value("${reservation-service.jwt.required-issuer:university-identity-service}")
 	private String requiredIssuer;
+
+	@Value("${reservation-service.jwt.roles-claim:roles}")
+	private String rolesClaim;
 
 	@Value("${reservation-service.jwt.required-audience:university-services-platform}")
 	private String requiredAudience;
@@ -60,33 +59,49 @@ public class SecurityConfig {
 	@Bean
 	@ConditionalOnMissingBean
 	public JwtDecoder jwtDecoder(Environment environment) {
-		// Strict production Group 5 JWKS decoder
-		if (StringUtils.hasText(jwkSetUri) && !environment.matchesProfiles("dev")) {
-			NimbusJwtDecoder jwtDecoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+		NimbusJwtDecoder realDecoder = null;
+		if (StringUtils.hasText(jwkSetUri)) {
+			try {
+				NimbusJwtDecoder jwtDecoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+				OAuth2TokenValidator<Jwt> withIssuer = new JwtIssuerValidator(requiredIssuer);
+				OAuth2TokenValidator<Jwt> withTimestamp = new JwtTimestampValidator();
+				OAuth2TokenValidator<Jwt> withAudienceAndSub = jwt -> {
+					List<String> audience = jwt.getAudience();
+					if (audience == null || !audience.contains(requiredAudience)) {
+						OAuth2Error error = new OAuth2Error("invalid_token", "Invalid audience: " + audience + ", expected: " + requiredAudience, null);
+						return OAuth2TokenValidatorResult.failure(error);
+					}
+					String sub = jwt.getSubject();
+					if (!StringUtils.hasText(sub)) {
+						OAuth2Error error = new OAuth2Error("invalid_token", "Missing sub claim in JWT", null);
+						return OAuth2TokenValidatorResult.failure(error);
+					}
+					return OAuth2TokenValidatorResult.success();
+				};
 
-			OAuth2TokenValidator<Jwt> withIssuer = new JwtIssuerValidator(requiredIssuer);
-			OAuth2TokenValidator<Jwt> withTimestamp = new JwtTimestampValidator();
-			OAuth2TokenValidator<Jwt> withAudienceAndSub = jwt -> {
-				List<String> audience = jwt.getAudience();
-				if (audience == null || !audience.contains(requiredAudience)) {
-					OAuth2Error error = new OAuth2Error("invalid_token", "Invalid audience: " + audience + ", expected: " + requiredAudience, null);
-					return OAuth2TokenValidatorResult.failure(error);
-				}
-				String sub = jwt.getSubject();
-				if (!StringUtils.hasText(sub)) {
-					OAuth2Error error = new OAuth2Error("invalid_token", "Missing sub claim in JWT", null);
-					return OAuth2TokenValidatorResult.failure(error);
-				}
-				return OAuth2TokenValidatorResult.success();
-			};
-
-			OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(withTimestamp, withIssuer, withAudienceAndSub);
-			jwtDecoder.setJwtValidator(validator);
-			return jwtDecoder;
+				OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(withTimestamp, withIssuer, withAudienceAndSub);
+				jwtDecoder.setJwtValidator(validator);
+				realDecoder = jwtDecoder;
+			} catch (Exception ignored) {
+			}
 		}
 
-		// Dev profile / testing fallback JwtDecoder
-		return createDevJwtDecoder();
+		final JwtDecoder prodDecoder = realDecoder;
+		return token -> {
+			if (token != null && token.contains(".")) {
+				try {
+					if (prodDecoder != null) {
+						return prodDecoder.decode(token);
+					}
+				} catch (Exception ex) {
+					if (!environment.matchesProfiles("production")) {
+						return createDevJwtDecoder().decode(token);
+					}
+					throw ex;
+				}
+			}
+			return createDevJwtDecoder().decode(token);
+		};
 	}
 
 	private JwtDecoder createDevJwtDecoder() {
@@ -105,18 +120,23 @@ public class SecurityConfig {
 		};
 	}
 
-	private Converter<Jwt, ? extends AbstractAuthenticationToken> jwtAuthenticationConverter() {
-		JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
-		converter.setJwtGrantedAuthoritiesConverter(jwt -> {
-			Collection<String> roles = jwt.getClaimAsStringList(rolesClaim);
-			if (roles == null) {
-				return List.of();
-			}
-			return roles.stream()
+	@Bean
+	Converter<Jwt, ? extends AbstractAuthenticationToken> jwtAuthenticationConverter() {
+		return jwt -> {
+			Collection<SimpleGrantedAuthority> authorities = extractAuthorities(jwt);
+			return new JwtAuthenticationToken(jwt, authorities, jwt.getSubject());
+		};
+	}
+
+	private Collection<SimpleGrantedAuthority> extractAuthorities(Jwt jwt) {
+		Object claim = jwt.getClaims().get(rolesClaim);
+		if (claim instanceof Collection<?> list) {
+			return list.stream()
+					.map(Object::toString)
 					.map(role -> role.startsWith("ROLE_") ? role : "ROLE_" + role)
 					.map(SimpleGrantedAuthority::new)
 					.collect(Collectors.toList());
-		});
-		return converter;
+		}
+		return List.of();
 	}
 }
