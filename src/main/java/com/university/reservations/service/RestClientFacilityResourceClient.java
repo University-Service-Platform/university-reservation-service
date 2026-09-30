@@ -11,7 +11,12 @@ import java.time.LocalDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -27,11 +32,34 @@ public class RestClientFacilityResourceClient implements FacilityResourceClient 
 		this.restClient = RestClient.builder().baseUrl(baseUrl).build();
 	}
 
+	private String resolveBearerToken() {
+		Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+		if (authentication != null) {
+			if (authentication.getPrincipal() instanceof Jwt jwt) {
+				return jwt.getTokenValue();
+			}
+			if (authentication.getCredentials() instanceof Jwt jwt) {
+				return jwt.getTokenValue();
+			}
+			if (authentication.getCredentials() instanceof String creds && StringUtils.hasText(creds)) {
+				return creds.startsWith("Bearer ") ? creds.substring(7) : creds;
+			}
+		}
+		return null;
+	}
+
 	@Override
 	public FacilityResourceValidationData validateResource(Long resourceId) {
 		try {
-			FacilityResourceValidationWrapper response = restClient.get()
-					.uri("/api/resources/{id}/validate", resourceId)
+			var requestSpec = restClient.get()
+					.uri("/api/resources/{id}/validate", resourceId);
+
+			String token = resolveBearerToken();
+			if (StringUtils.hasText(token)) {
+				requestSpec.header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+			}
+
+			FacilityResourceValidationWrapper response = requestSpec
 					.retrieve()
 					.body(FacilityResourceValidationWrapper.class);
 
@@ -81,9 +109,16 @@ public class RestClientFacilityResourceClient implements FacilityResourceClient 
 					requestedCapacity,
 					userRole);
 
-			ResourceAvailabilityWrapper response = restClient.post()
+			var requestSpec = restClient.post()
 					.uri("/api/resources/check-availability")
-					.body(request)
+					.body(request);
+
+			String token = resolveBearerToken();
+			if (StringUtils.hasText(token)) {
+				requestSpec.header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+			}
+
+			ResourceAvailabilityWrapper response = requestSpec
 					.retrieve()
 					.body(ResourceAvailabilityWrapper.class);
 
