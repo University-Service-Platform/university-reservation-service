@@ -35,7 +35,7 @@ public class MockUserValidationClient implements UserValidationClient {
 				"STUDENT",
 				"ACTIVE",
 				true,
-				List.of("STUDENT", "RESOURCE_MANAGER"),
+				List.of("STUDENT", "RESOURCE_MANAGER", "ADMIN"),
 				null,
 				null
 		);
@@ -44,7 +44,7 @@ public class MockUserValidationClient implements UserValidationClient {
 	@Override
 	public Group5UserValidationData validateUserWithRole(String userId, String requiredRole, String token) {
 		log.info("Mocking Group 5 user validation with role {} for userId: {}", requiredRole, userId);
-		boolean isAuthorized = "RESOURCE_MANAGER".equalsIgnoreCase(requiredRole) || "STUDENT".equalsIgnoreCase(requiredRole);
+		boolean isAuthorized = "RESOURCE_MANAGER".equalsIgnoreCase(requiredRole) || "STUDENT".equalsIgnoreCase(requiredRole) || "ADMIN".equalsIgnoreCase(requiredRole);
 		return new Group5UserValidationData(
 				userId,
 				"STU001",
@@ -52,7 +52,7 @@ public class MockUserValidationClient implements UserValidationClient {
 				"STUDENT",
 				"ACTIVE",
 				true,
-				List.of("STUDENT", "RESOURCE_MANAGER"),
+				List.of("STUDENT", "RESOURCE_MANAGER", "ADMIN"),
 				isAuthorized,
 				requiredRole
 		);
@@ -73,7 +73,7 @@ public class MockUserValidationClient implements UserValidationClient {
 				userId,
 				"STU001",
 				"ACTIVE",
-				List.of("STUDENT", "RESOURCE_MANAGER"),
+				List.of("STUDENT", "RESOURCE_MANAGER", "ADMIN"),
 				true,
 				List.of(),
 				"User is eligible.",

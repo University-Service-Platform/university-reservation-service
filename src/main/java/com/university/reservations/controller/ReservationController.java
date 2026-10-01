@@ -53,7 +53,7 @@ public class ReservationController {
 	}
 
 	@GetMapping("/pending")
-	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
+	@PreAuthorize("hasAnyRole('RESOURCE_MANAGER', 'ADMIN')")
 	@Operation(summary = "View pending reservation requests", description = "Restricted to Resource Managers. Returns all reservations awaiting approval.")
 	public ApiResponse<List<ReservationResponse>> getPending() {
 		return ApiResponse.success("Pending reservations retrieved successfully", reservationService.getPendingReservations());
@@ -78,7 +78,7 @@ public class ReservationController {
 	}
 
 	@PostMapping("/{id}/approve")
-	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
+	@PreAuthorize("hasAnyRole('RESOURCE_MANAGER', 'ADMIN')")
 	@Operation(summary = "Approve a pending reservation", description = "Restricted to Resource Managers. Approves a PENDING reservation and records audit log.")
 	public ApiResponse<ReservationResponse> approve(@PathVariable Long id,
 			@RequestBody(required = false) ApprovalRequest request) {
@@ -86,7 +86,7 @@ public class ReservationController {
 	}
 
 	@PostMapping("/{id}/reject")
-	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
+	@PreAuthorize("hasAnyRole('RESOURCE_MANAGER', 'ADMIN')")
 	@Operation(summary = "Reject a pending reservation", description = "Restricted to Resource Managers. Rejects a PENDING reservation with a mandatory reason.")
 	public ApiResponse<ReservationResponse> reject(@PathVariable Long id, @RequestBody ApprovalRequest request) {
 		return ApiResponse.success("Reservation rejected successfully", reservationService.rejectReservation(id, request));

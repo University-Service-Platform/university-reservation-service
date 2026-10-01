@@ -28,6 +28,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -184,7 +186,7 @@ public class ReservationService {
 	}
 
 	@Transactional(readOnly = true)
-	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
+	@PreAuthorize("hasAnyRole('RESOURCE_MANAGER', 'ADMIN')")
 	public List<ReservationResponse> getPendingReservations() {
 		verifyActiveResourceManager();
 		return reservationRepository.findByStatus(ReservationStatus.PENDING)
@@ -214,7 +216,7 @@ public class ReservationService {
 	}
 
 	@Transactional
-	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
+	@PreAuthorize("hasAnyRole('RESOURCE_MANAGER', 'ADMIN')")
 	public ReservationResponse approveReservation(Long id, ApprovalRequest request) {
 		verifyActiveResourceManager();
 
@@ -238,7 +240,7 @@ public class ReservationService {
 	}
 
 	@Transactional
-	@PreAuthorize("hasRole('RESOURCE_MANAGER')")
+	@PreAuthorize("hasAnyRole('RESOURCE_MANAGER', 'ADMIN')")
 	public ReservationResponse rejectReservation(Long id, ApprovalRequest request) {
 		verifyActiveResourceManager();
 
@@ -311,9 +313,24 @@ public class ReservationService {
 
 	private void verifyActiveResourceManager() {
 		String managerId = authService.getCurrentUserId();
-		Group5UserValidationData validation = userValidationClient.validateUserWithRole(managerId, "RESOURCE_MANAGER");
+
+		Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+		boolean isAdmin = auth != null && auth.getAuthorities().stream()
+				.anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+
+		String requiredRole = isAdmin ? "ADMIN" : "RESOURCE_MANAGER";
+		Group5UserValidationData validation = userValidationClient.validateUserWithRole(managerId, requiredRole);
 		if (validation == null || !Boolean.TRUE.equals(validation.isValid()) || !Boolean.TRUE.equals(validation.isAuthorized())) {
-			throw new AccessDeniedException("Authenticated user is not an active RESOURCE_MANAGER in Identity Service");
+			if (validation != null && Boolean.TRUE.equals(validation.isValid()) && validation.roles() != null
+					&& validation.roles().stream().anyMatch(r -> "ADMIN".equalsIgnoreCase(r) || "RESOURCE_MANAGER".equalsIgnoreCase(r))) {
+				return;
+			}
+			Group5UserValidationData basicValidation = userValidationClient.validateUser(managerId);
+			if (basicValidation != null && Boolean.TRUE.equals(basicValidation.isValid()) && basicValidation.roles() != null
+					&& basicValidation.roles().stream().anyMatch(r -> "ADMIN".equalsIgnoreCase(r) || "RESOURCE_MANAGER".equalsIgnoreCase(r))) {
+				return;
+			}
+			throw new AccessDeniedException("Authenticated user is not an active RESOURCE_MANAGER or ADMIN in Identity Service");
 		}
 	}
 

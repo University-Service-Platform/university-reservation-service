@@ -171,6 +171,15 @@ class ReservationControllerTest {
 	}
 
 	@Test
+	@WithMockUser(roles = "ADMIN")
+	void getPending_asAdminReturns200() throws Exception {
+		when(reservationService.getPendingReservations()).thenReturn(List.of(response));
+
+		mockMvc.perform(get("/api/v1/reservations/pending"))
+				.andExpect(status().isOk());
+	}
+
+	@Test
 	@WithMockUser
 	void getMyReservations_returns200() throws Exception {
 		when(reservationService.getMyReservations()).thenReturn(List.of(response));

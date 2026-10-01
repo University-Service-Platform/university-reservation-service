@@ -116,7 +116,7 @@ public class SecurityConfig {
 			Map<String, Object> headers = Map.of("alg", "none");
 			Map<String, Object> claims = Map.of(
 					"sub", sub,
-					rolesClaim, List.of("STUDENT", "RESOURCE_MANAGER"),
+					rolesClaim, List.of("STUDENT", "RESOURCE_MANAGER", "ADMIN"),
 					"iss", requiredIssuer,
 					"aud", List.of(requiredAudience),
 					"iat", now,
