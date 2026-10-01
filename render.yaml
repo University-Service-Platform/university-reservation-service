@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: university-reservation-service
+    runtime: docker
+    plan: free
+    healthCheckPath: /swagger-ui.html
+    envVars:
+      - key: PORT
+        value: 8082
+      - key: FACILITY_SERVICE_URL
+        sync: false
